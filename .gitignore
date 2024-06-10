@@ -1,1 +1,3 @@
-.vercel
+*.pyc
+lib
+*.zip
