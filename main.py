@@ -32,7 +32,7 @@ async def transcribe_audio(request: TranscriptionRequest):
         start_time = time.time()
 
         # Transcribe the audio file
-        result = model.transcribe(audio_path, word_timestamps=True)
+        result = model.transcribe(audio_path)
 
         # End the timer
         end_time = time.time()
@@ -40,22 +40,14 @@ async def transcribe_audio(request: TranscriptionRequest):
         # Calculate the elapsed time
         elapsed_time = end_time - start_time
 
-        # Extract the word-level transcripts
-        word_transcripts = []
-        for segment in result['segments']:
-            for word in segment['words']:
-                word_transcripts.append({
-                    "word": word['word'],
-                    "start": word['start'],
-                    "end": word['end'],
-                    "probability": word['probability']
-                })
+        # Extract the text transcript
+        transcript = result['text']
 
         # Remove the downloaded audio file
         os.remove(audio_path)
 
         return {
-            "word_transcripts": word_transcripts,
+            "transcript": transcript,
             "transcription_time": f"{elapsed_time:.2f} seconds"
         }
     except Exception as e:
