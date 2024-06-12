@@ -26,6 +26,7 @@ executor = ThreadPoolExecutor(max_workers=4)
 class VideoCreateRequest(BaseModel):
     audio_url: str
     assetUrls: list[str]
+    background_music_url: str
 
 model = whisper.load_model("tiny.en")
 
