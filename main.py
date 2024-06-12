@@ -10,7 +10,7 @@ import requests
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from moviepy.editor import VideoFileClip, concatenate_videoclips, AudioFileClip
+from moviepy.editor import VideoFileClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
 from concurrent.futures import ThreadPoolExecutor
 
 
@@ -124,12 +124,13 @@ async def transcribe_audio(request: VideoCreateRequest):
         print("Received request:", request.json())  # Log the incoming JSON data
         audio_url = request.audio_url
         asset_urls = request.assetUrls
+        background_music_url = request.background_music_url
 
         unique_filename = f"{uuid.uuid4()}.mp4"
         output_video_path = os.path.join(output_dir, unique_filename)
         
         # Submit the video creation task to the executor
-        executor.submit(create_video, audio_url, asset_urls, output_video_path)
+        executor.submit(create_video, audio_url, asset_urls, background_music_url, output_video_path)
         
         # Return the URL where the video will be stored
         return JSONResponse(content={"message": "Video processing started", "video_path": f"/BackgroundVideos/{unique_filename}"})
@@ -138,25 +139,47 @@ async def transcribe_audio(request: VideoCreateRequest):
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-def create_video(audio_url: str, asset_urls: list[str], output_video_path: str):
+def create_video(audio_url: str, asset_urls: list[str], background_music_url: str, output_video_path: str):
     try:
-        # Download audio file
-        print("Downloading audio...")
+        # Download main audio file
+        print("Downloading main audio...")
         audio_response = requests.get(audio_url)
         audio_path = os.path.join(output_dir, f"audio_{uuid.uuid4()}.mp3")
         with open(audio_path, 'wb') as f:
             f.write(audio_response.content)
         
-        # Get the length of the audio file
-        print("Loading audio file...")
+        # Get the length of the main audio file
+        print("Loading main audio file...")
         audio_clip = AudioFileClip(audio_path)
         audio_duration = audio_clip.duration
-        print(f"Audio duration: {audio_duration} seconds")
+        print(f"Main audio duration: {audio_duration} seconds")
+
+        # Download background music
+        print("Downloading background music...")
+        bg_music_response = requests.get(background_music_url)
+        bg_music_path = os.path.join(output_dir, f"background_music_{uuid.uuid4()}.mp3")
+        with open(bg_music_path, 'wb') as f:
+            f.write(bg_music_response.content)
+        
+        # Load background music and set volume to 20%
+        bg_music_clip = AudioFileClip(bg_music_path).volumex(0.14)
+
+        # Manually loop the background music to match the duration of the main audio
+        bg_music_clips = []
+        total_bg_duration = 0
+        while total_bg_duration < audio_duration:
+            bg_music_clips.append(bg_music_clip)
+            total_bg_duration += bg_music_clip.duration
+
+        combined_bg_music_clip = concatenate_audioclips(bg_music_clips).subclip(0, audio_duration)
+        
+        # Combine the main audio and background music
+        combined_audio = CompositeAudioClip([audio_clip, combined_bg_music_clip])
         
         # Download and process asset videos
         video_clips = []
         target_size = (1920, 1080)  # Example target size (width, height)
-        temp_files = []  # To keep track of intermediate files for deletion
+        temp_files = [audio_path, bg_music_path]  # To keep track of intermediate files for deletion
 
         for i, url in enumerate(asset_urls):
             print(f"Downloading video {i+1}/{len(asset_urls)}...")
@@ -188,7 +211,7 @@ def create_video(audio_url: str, asset_urls: list[str], output_video_path: str):
             print(f"Total video duration: {total_duration} seconds")
         
         final_video = concatenate_videoclips(final_clips, method="compose")
-        final_video = final_video.set_audio(audio_clip)
+        final_video = final_video.set_audio(combined_audio)
         
         print(f"Writing final video to {output_video_path}...")
         final_video.write_videofile(output_video_path, codec="libx264", audio_codec="aac")
@@ -201,8 +224,6 @@ def create_video(audio_url: str, asset_urls: list[str], output_video_path: str):
                 print(f"Deleted {file_path}")
             except Exception as e:
                 print(f"Error deleting {file_path}: {e}")
-        os.remove(audio_path)
-        print(f"Deleted {audio_path}")
         
         print("Video created successfully")
     
