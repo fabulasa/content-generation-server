@@ -3,3 +3,7 @@ fastapi
 uvicorn
 mangum
 aiohttp
+pydantic
+moviepy
+mutagen
+Pillow==8.2.0
