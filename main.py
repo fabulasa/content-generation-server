@@ -24,7 +24,7 @@ class CaptionedVideoRequest(BaseModel):
     background_video_url: str
     captions: str
 
-output_dir_for_final_videos = "./Final_Videos"
+output_dir_for_final_videos = "Final_Videos"
 os.makedirs(output_dir_for_final_videos, exist_ok=True)
 
 app = FastAPI()
