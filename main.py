@@ -7,16 +7,25 @@ from pydantic import BaseModel
 import os
 import uuid
 import requests
+import json
+import random
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from moviepy.editor import VideoFileClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
+from moviepy.editor import VideoFileClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips, TextClip, CompositeVideoClip
 from concurrent.futures import ThreadPoolExecutor
 
 
 # Create output directory if not exists
 output_dir = "BackgroundVideos"
 os.makedirs(output_dir, exist_ok=True)
+
+class CaptionedVideoRequest(BaseModel):
+    background_video_url: str
+    captions: str
+
+output_dir_for_final_videos = "./Final_Videos"
+os.makedirs(output_dir_for_final_videos, exist_ok=True)
 
 app = FastAPI()
 
@@ -230,9 +239,125 @@ def create_video(audio_url: str, asset_urls: list[str], background_music_url: st
     
     except Exception as e:
         print(f"Error: {e}")
+        
+def process_video(background_video_path, captions, output_video_path):
+    try:
+        # Load background video
+        background_video = VideoFileClip(background_video_path)  # Load full video
+
+        # Define target size
+        target_size = (1920, 1080)
+        
+        # Resize background video to fit within 1920x1080
+        background_video = background_video.resize(height=target_size[1]).set_position("center")
+
+        def scale_text_clip(txt_clip, start, end, special=False):
+            duration = end - start
+            if special:
+                def resize(t):
+                    third_duration = duration / 3
+                    if t < third_duration:
+                        scale_factor = 1.0 + 0.15 * (t / third_duration)
+                    elif t < 2 * third_duration:
+                        scale_factor = 1.15 - 0.2 * ((t - third_duration) / third_duration)
+                    else:
+                        scale_factor = 0.9 + 0.1 * ((t - 2 * third_duration) / third_duration)
+                    return scale_factor
+            else:
+                def resize(t):
+                    half_duration = duration / 2
+                    if t < half_duration:
+                        scale_factor = 1.0 + 0.1 * (t / half_duration)
+                    else:
+                        scale_factor = 1.1 - 0.1 * ((t - half_duration) / half_duration)
+                    return scale_factor
+
+            return txt_clip.resize(lambda t: resize(t)).set_start(start).set_duration(duration)
+
+        # Create text clips for each caption
+        text_clips = []
+        special_indices = random.sample(range(len(captions)), int(0.3 * len(captions)))  # Randomly select 30% of the indices
+
+        for i, caption in enumerate(captions):
+            txt = caption['word']
+            start = caption['start']
+            end = caption['end']
+            duration = end - start
+            
+            if duration > 0:
+                # Create the primary text clip
+                text_clip = (TextClip(txt, fontsize=60, font='Nexa-Bold', color='white', stroke_color='white', stroke_width=6, kerning=8)
+                             .set_position(('center', target_size[1] // 3)))
+
+                # Create a second text clip with a black stroke
+                text_clip_black = (TextClip(txt, fontsize=65, font='Nexa-Bold', color='transparent', stroke_color='rgb(38, 38, 38)', stroke_width=8, kerning=8)
+                                   .set_position(('center', target_size[1] // 3)))
+
+                glow_offsets = [(0, 0), (1, 1), (-1, -1), (1, -1), (-1, 1)]
+                glow_clips = [TextClip(txt, fontsize=68, font='Nexa-Bold', color='transparent', stroke_color='rgb(206, 202, 198)', stroke_width=6, kerning=6)
+                              .set_position(('center', target_size[1] // 3))
+                              for x, y in glow_offsets]
+
+                text_clip_bold = text_clip.set_position(('center', target_size[1] // 3 + 1))
+
+                # Determine if this caption should have the special transformation
+                special = i in special_indices
+
+                # Scale the text clips
+                scaled_text_clip = scale_text_clip(text_clip, start, end, special=special)
+                scaled_text_clip_black = scale_text_clip(text_clip_black, start, end, special=special)
+                scaled_glow_clips = [scale_text_clip(glow_clip, start, end, special=special) for glow_clip in glow_clips]
+
+                # Append the clips in the correct order to create the desired effect
+                text_clips.append(scaled_text_clip_black)
+                # text_clips.extend(scaled_glow_clips)
+                text_clips.append(scaled_text_clip)
+                # text_clips.append(text_clip_bold)
+
+        # Create final video with scrolling captions
+        final_video = CompositeVideoClip([background_video] + text_clips, size=target_size)
+        
+        # Save the final video
+        final_video.write_videofile(output_video_path, codec="libx264", audio_codec="aac")
+        
+        # Delete the original asset video
+        os.remove(background_video_path)
+    except Exception as e:
+        print(f"Error: {e}")
+
+@app.post("/create-captioned-videos/")
+async def create_captioned_videos(request: CaptionedVideoRequest):
+    try:
+        print("Received request:")
+        print(f"Background Video URL: {request.background_video_url}")
+        print(f"Captions: {request.captions}")
+
+        # Parse captions
+        captions = json.loads(request.captions)
+        
+        # Paths
+        background_video_path = f".{request.background_video_url}"
+
+        unique_id = str(uuid.uuid4())
+        output_video_path = os.path.join(output_dir_for_final_videos, f"output_captioned_video_{unique_id}.mp4")
+        
+        # Respond with the output path before processing
+        response = {"expected_output_video_url": output_video_path}
+        print(response)
+        
+        # Submit video processing task to the executor
+        executor.submit(process_video, background_video_path, captions, output_video_path)
+        
+        return response
+    except Exception as e:
+        print(f"Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Mount the static files directory
 app.mount("/BackgroundVideos", StaticFiles(directory=output_dir), name="BackgroundVideos")
+
+app.mount("/Final_Videos", StaticFiles(directory="Final_Videos"), name="Final_Videos")
+
 
 
 if __name__ == "__main__":
