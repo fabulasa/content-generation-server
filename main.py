@@ -242,6 +242,7 @@ def create_video(audio_url: str, asset_urls: list[str], background_music_url: st
         
 def process_video(background_video_path, captions, output_video_path):
     try:
+        font_path = "/home/ubuntu/Nexa Bold.otf"
         # Load background video
         background_video = VideoFileClip(background_video_path)  # Load full video
 
@@ -286,15 +287,15 @@ def process_video(background_video_path, captions, output_video_path):
             
             if duration > 0:
                 # Create the primary text clip
-                text_clip = (TextClip(txt, fontsize=60, font='Nexa-Bold', color='white', stroke_color='white', stroke_width=6, kerning=8)
+                text_clip = (TextClip(txt, fontsize=60, font=font_path, color='white', stroke_color='white', stroke_width=6, kerning=8)
                              .set_position(('center', target_size[1] // 3)))
 
                 # Create a second text clip with a black stroke
-                text_clip_black = (TextClip(txt, fontsize=65, font='Nexa-Bold', color='transparent', stroke_color='rgb(38, 38, 38)', stroke_width=8, kerning=8)
+                text_clip_black = (TextClip(txt, fontsize=65, font=font_path, color='transparent', stroke_color='rgb(38, 38, 38)', stroke_width=8, kerning=8)
                                    .set_position(('center', target_size[1] // 3)))
 
                 glow_offsets = [(0, 0), (1, 1), (-1, -1), (1, -1), (-1, 1)]
-                glow_clips = [TextClip(txt, fontsize=68, font='Nexa-Bold', color='transparent', stroke_color='rgb(206, 202, 198)', stroke_width=6, kerning=6)
+                glow_clips = [TextClip(txt, fontsize=68, font=font_path, color='transparent', stroke_color='rgb(206, 202, 198)', stroke_width=6, kerning=6)
                               .set_position(('center', target_size[1] // 3))
                               for x, y in glow_offsets]
 
@@ -340,6 +341,7 @@ async def create_captioned_videos(request: CaptionedVideoRequest):
 
         unique_id = str(uuid.uuid4())
         output_video_path = os.path.join(output_dir_for_final_videos, f"output_captioned_video_{unique_id}.mp4")
+
         
         # Respond with the output path before processing
         response = {"expected_output_video_url": output_video_path}
