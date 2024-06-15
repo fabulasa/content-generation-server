@@ -2,7 +2,6 @@ import time
 import whisper
 import aiohttp
 import os
-from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import os
 import uuid
@@ -14,6 +13,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from moviepy.editor import VideoFileClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips, TextClip, CompositeVideoClip
 from concurrent.futures import ThreadPoolExecutor
+import http.client
+import httplib2
+from fastapi import FastAPI, HTTPException, Request
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaFileUpload
+from oauth2client.client import flow_from_clientsecrets
+from oauth2client.file import Storage
 
 
 # Create output directory if not exists
@@ -27,7 +34,16 @@ class CaptionedVideoRequest(BaseModel):
 output_dir_for_final_videos = "Final_Videos"
 os.makedirs(output_dir_for_final_videos, exist_ok=True)
 
+class VideoData(BaseModel):
+    file: str
+    title: str
+    description: str
+    keywords: str = ""
+    category: str = "22"
+    privacyStatus: str = "private"
+
 app = FastAPI()
+
 
 # Thread pool for background tasks
 executor = ThreadPoolExecutor(max_workers=4)
@@ -115,8 +131,7 @@ async def transcribe_word_level(request: TranscriptionRequest):
                 word_transcripts.append({
                     "word": word['word'],
                     "start": word['start'],
-                    "end": word['end'],
-                    "probability": word['probability']
+                    "end": word['end']
                 })
         # Remove the downloaded audio file
         os.remove(audio_path)
@@ -242,15 +257,17 @@ def create_video(audio_url: str, asset_urls: list[str], background_music_url: st
         
 def process_video(background_video_path, captions, output_video_path):
     try:
-        font_path = "/home/ubuntu/Nexa Bold.otf"
+        # font_path = "/home/ubuntu/Nexa Bold.otf"
+        font_path = "/home/fbk001/Nexa Bold.otf"
+
         # Load background video
         background_video = VideoFileClip(background_video_path)  # Load full video
 
-        # Define target size
-        target_size = (1920, 1080)
+        # Define target size for YouTube Shorts
+        target_size = (1080, 1920)
         
-        # Resize background video to fit within 1920x1080
-        background_video = background_video.resize(height=target_size[1]).set_position("center")
+        # Resize background video to fit within 1080x1920
+        background_video = background_video.resize(width=target_size[0]).set_position("center")
 
         def scale_text_clip(txt_clip, start, end, special=False):
             duration = end - start
@@ -287,15 +304,15 @@ def process_video(background_video_path, captions, output_video_path):
             
             if duration > 0:
                 # Create the primary text clip
-                text_clip = (TextClip(txt, fontsize=60, font=font_path, color='white', stroke_color='white', stroke_width=6, kerning=8)
+                text_clip = (TextClip(txt, fontsize=100, font=font_path, color='white', stroke_color='white', stroke_width=4, kerning=8)
                              .set_position(('center', target_size[1] // 3)))
 
                 # Create a second text clip with a black stroke
-                text_clip_black = (TextClip(txt, fontsize=65, font=font_path, color='transparent', stroke_color='rgb(38, 38, 38)', stroke_width=8, kerning=8)
+                text_clip_black = (TextClip(txt, fontsize=106, font=font_path, color='transparent', stroke_color='black', stroke_width=6, kerning=8)
                                    .set_position(('center', target_size[1] // 3)))
 
                 glow_offsets = [(0, 0), (1, 1), (-1, -1), (1, -1), (-1, 1)]
-                glow_clips = [TextClip(txt, fontsize=68, font=font_path, color='transparent', stroke_color='rgb(206, 202, 198)', stroke_width=6, kerning=6)
+                glow_clips = [TextClip(txt, fontsize=108, font=font_path, color='transparent', stroke_color='rgb(206, 202, 198)', stroke_width=6, kerning=6)
                               .set_position(('center', target_size[1] // 3))
                               for x, y in glow_offsets]
 
@@ -354,6 +371,118 @@ async def create_captioned_videos(request: CaptionedVideoRequest):
     except Exception as e:
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+CLIENT_SECRETS_FILE = "client_secrets.json"
+YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
+YOUTUBE_API_SERVICE_NAME = "youtube"
+YOUTUBE_API_VERSION = "v3"
+MISSING_CLIENT_SECRETS_MESSAGE = f"""
+WARNING: Please configure OAuth 2.0
+
+To make this sample run you will need to populate the client_secrets.json file
+found at:
+
+   {os.path.abspath(os.path.join(os.path.dirname(__file__), CLIENT_SECRETS_FILE))}
+
+with information from the API Console
+https://console.cloud.google.com/
+
+For more information about the client_secrets.json file format, please visit:
+https://developers.google.com/api-client-library/python/guide/aaa_client_secrets
+"""
+
+RETRIABLE_EXCEPTIONS = (httplib2.HttpLib2Error, IOError,
+                        http.client.NotConnected, http.client.IncompleteRead,
+                        http.client.ImproperConnectionState, http.client.CannotSendRequest,
+                        http.client.CannotSendHeader, http.client.ResponseNotReady,
+                        http.client.BadStatusLine)
+RETRIABLE_STATUS_CODES = [500, 502, 503, 504]
+MAX_RETRIES = 10
+
+
+
+def get_authenticated_service():
+    flow = flow_from_clientsecrets(CLIENT_SECRETS_FILE,
+                                   scope=YOUTUBE_UPLOAD_SCOPE,
+                                   message=MISSING_CLIENT_SECRETS_MESSAGE)
+
+    storage = Storage("upload_video.py-oauth2.json")
+    credentials = storage.get()
+
+    if credentials is None or credentials.invalid:
+        credentials = flow.run_local_server(port=0)
+
+    return build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION,
+                 http=credentials.authorize(httplib2.Http()))
+
+def initialize_upload(youtube, video_data: VideoData):
+    tags = video_data.keywords.split(",") if video_data.keywords else None
+
+    body = dict(
+        snippet=dict(
+            title=video_data.title,
+            description=video_data.description,
+            tags=tags,
+            categoryId=video_data.category
+        ),
+        status=dict(
+            privacyStatus=video_data.privacyStatus
+        )
+    )
+
+    # Get the absolute path to the video file
+    file_path = os.path.abspath(video_data.file)
+
+    insert_request = youtube.videos().insert(
+        part=",".join(body.keys()),
+        body=body,
+        media_body=MediaFileUpload(file_path, chunksize=-1, resumable=True)
+    )
+
+    return resumable_upload(insert_request)
+
+def resumable_upload(insert_request):
+    response = None
+    error = None
+    retry = 0
+    while response is None:
+        try:
+            print("Uploading file...")
+            status, response = insert_request.next_chunk()
+            if response is not None:
+                if 'id' in response:
+                    print(f"Video id '{response['id']}' was successfully uploaded.")
+                    return response
+                else:
+                    raise HTTPException(status_code=500, detail="The upload failed with an unexpected response.")
+        except HttpError as e:
+            if e.resp.status in RETRIABLE_STATUS_CODES:
+                error = f"A retriable HTTP error {e.resp.status} occurred:\n{e.content}"
+            else:
+                raise HTTPException(status_code=e.resp.status, detail=e.content)
+        except RETRIABLE_EXCEPTIONS as e:
+            error = f"A retriable error occurred: {e}"
+
+        if error is not None:
+            print(error)
+            retry += 1
+            if retry > MAX_RETRIES:
+                raise HTTPException(status_code=500, detail="No longer attempting to retry.")
+
+            max_sleep = 2 ** retry
+            sleep_seconds = random.random() * max_sleep
+            print(f"Sleeping {sleep_seconds} seconds and then retrying...")
+            time.sleep(sleep_seconds)
+
+@app.post("/uploadToYouTube")
+async def upload_to_youtube(video_data: VideoData):
+    try:
+        youtube = get_authenticated_service()
+        response = initialize_upload(youtube, video_data)
+        return {"id": response['id']}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # Mount the static files directory
 app.mount("/BackgroundVideos", StaticFiles(directory=output_dir), name="BackgroundVideos")
