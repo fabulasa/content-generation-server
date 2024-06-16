@@ -257,7 +257,7 @@ def create_video(audio_url: str, asset_urls: list[str], background_music_url: st
         
 def process_video(background_video_path, captions, output_video_path):
     try:
-        # font_path = "/home/ubuntu/Nexa Bold.otf"
+        font_path = "/home/ubuntu/Nexa Bold.otf"
         # font_path = "/home/fbk001/Nexa Bold.otf"
 
         # Load background video
