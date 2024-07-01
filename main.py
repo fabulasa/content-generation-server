@@ -180,7 +180,7 @@ async def transcribe_audio(request: VideoCreateRequest):
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-def create_video(audio_url: str, asset_urls: list[str], background_music_url: str, output_video_path: str):
+def create_video(audio_url: str, asset_urls: List[str], background_music_url: str, output_video_path: str):
     try:
         # Download main audio file
         print("Downloading main audio...")
