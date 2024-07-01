@@ -21,18 +21,32 @@ from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 from oauth2client.client import flow_from_clientsecrets
 from oauth2client.file import Storage
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from PIL import Image
+import numpy as np
+import math
 
 
 # Create output directory if not exists
 output_dir = "BackgroundVideos"
 os.makedirs(output_dir, exist_ok=True)
 
+output_dir_for_final_videos = "Final_Videos"
+os.makedirs(output_dir_for_final_videos, exist_ok=True)
+
+output_dir_for_semantic_videos_backgrounds = "SemanticVideosBackgrounds"
+os.makedirs(output_dir_for_semantic_videos_backgrounds, exist_ok=True)
+
+output_dir_for_final_semantic_videos = "FinalSemanticVideos"
+os.makedirs(output_dir_for_final_semantic_videos, exist_ok=True)
+
+
 class CaptionedVideoRequest(BaseModel):
     background_video_url: str
     captions: str
 
-output_dir_for_final_videos = "Final_Videos"
-os.makedirs(output_dir_for_final_videos, exist_ok=True)
 
 class VideoData(BaseModel):
     file: str
@@ -40,7 +54,7 @@ class VideoData(BaseModel):
     description: str
     keywords: str = ""
     category: str = "22"
-    privacyStatus: str = "private"
+    privacyStatus: str = "public"
 
 app = FastAPI()
 
@@ -158,7 +172,7 @@ async def transcribe_audio(request: VideoCreateRequest):
         executor.submit(create_video, audio_url, asset_urls, background_music_url, output_video_path)
         
         # Return the URL where the video will be stored
-        return JSONResponse(content={"message": "Video processing started", "video_path": f"/BackgroundVideos/{unique_filename}"})
+        return JSONResponse(content={"message": "Video processing started", "video_path": f"BackgroundVideos/{unique_filename}"})
     
     except Exception as e:
         print(f"Error: {e}")
@@ -354,7 +368,7 @@ async def create_captioned_videos(request: CaptionedVideoRequest):
         captions = json.loads(request.captions)
         
         # Paths
-        background_video_path = f".{request.background_video_url}"
+        background_video_path = f"{request.background_video_url}"
 
         unique_id = str(uuid.uuid4())
         output_video_path = os.path.join(output_dir_for_final_videos, f"output_captioned_video_{unique_id}.mp4")
@@ -398,22 +412,32 @@ RETRIABLE_EXCEPTIONS = (httplib2.HttpLib2Error, IOError,
                         http.client.BadStatusLine)
 RETRIABLE_STATUS_CODES = [500, 502, 503, 504]
 MAX_RETRIES = 10
+CLIENT_SECRETS_FILE = "client_secrets.json"
+SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+TOKEN_FILE = "token.json"
 
 
 
 def get_authenticated_service():
-    flow = flow_from_clientsecrets(CLIENT_SECRETS_FILE,
-                                   scope=YOUTUBE_UPLOAD_SCOPE,
-                                   message=MISSING_CLIENT_SECRETS_MESSAGE)
+    credentials = None
 
-    storage = Storage("upload_video.py-oauth2.json")
-    credentials = storage.get()
+    # Load credentials from file if available
+    if os.path.exists(TOKEN_FILE):
+        credentials = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
 
-    if credentials is None or credentials.invalid:
-        credentials = flow.run_local_server(port=0)
+    # If no valid credentials are available, prompt the user to log in
+    if not credentials or not credentials.valid:
+        if credentials and credentials.expired and credentials.refresh_token:
+            credentials.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRETS_FILE, SCOPES)
+            credentials = flow.run_local_server(port=0)
 
-    return build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION,
-                 http=credentials.authorize(httplib2.Http()))
+        # Save the credentials for the next run
+        with open(TOKEN_FILE, 'w') as token:
+            token.write(credentials.to_json())
+
+    return build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, credentials=credentials)
 
 def initialize_upload(youtube, video_data: VideoData):
     tags = video_data.keywords.split(",") if video_data.keywords else None
@@ -483,11 +507,289 @@ async def upload_to_youtube(video_data: VideoData):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+class VideoCreateRequestFromSemanticImages(BaseModel):
+    audio_url: str
+    semantic_structure: list
+    background_music_url: str
+
+@app.post("/create-video-from-semantic-images/")
+async def create_video_from_semantic_images(request: VideoCreateRequestFromSemanticImages):
+    try:
+        print("Received POST data:", request)
+
+        # Create a unique file path
+        unique_filename = f"{uuid.uuid4()}.mp4"
+        output_video_path = os.path.join(output_dir_for_semantic_videos_backgrounds, unique_filename)
+
+        # Return the file path in the response before starting video processing
+        response = {
+            "message": "Data logged successfully",
+            "video_path": output_video_path
+        }
+        print(response)
+
+        # Submit the video creation task to the executor
+        executor.submit(create__semantic_background_video, request.audio_url, request.semantic_structure, request.background_music_url, output_video_path)
+        
+        return JSONResponse(content=response)
+
+    except Exception as e:
+        print(f"Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+def zoom_in_effect(clip, zoom_ratio=0.04):
+    def effect(get_frame, t):
+        img = Image.fromarray(get_frame(t))
+        base_size = img.size
+
+        new_size = [
+            math.ceil(img.size[0] * (1 + (zoom_ratio * t))),
+            math.ceil(img.size[1] * (1 + (zoom_ratio * t)))
+        ]
+
+        # The new dimensions must be even.
+        new_size[0] = new_size[0] + (new_size[0] % 2)
+        new_size[1] = new_size[1] + (new_size[1] % 2)
+
+        img = img.resize(new_size, Image.LANCZOS)
+
+        x = math.ceil((new_size[0] - base_size[0]) / 2)
+        y = math.ceil((new_size[1] - base_size[1]) / 2)
+
+        img = img.crop([
+            x, y, new_size[0] - x, new_size[1] - y
+        ]).resize(base_size, Image.LANCZOS)
+
+        result = np.array(img)
+        img.close()
+
+        return result
+
+    return clip.fl(effect)
+
+def create__semantic_background_video(audio_url: str, semantic_structure: list, background_music_url: str, output_video_path: str):
+    try:
+        # Download main audio file
+        print("Downloading main audio...")
+        audio_response = requests.get(audio_url)
+        audio_path = os.path.join(output_dir_for_semantic_videos_backgrounds, f"audio_{uuid.uuid4()}.mp3")
+        with open(audio_path, 'wb') as f:
+            f.write(audio_response.content)
+        
+        # Load main audio file
+        audio_clip = AudioFileClip(audio_path)
+        audio_duration = audio_clip.duration
+        print(f"Main audio duration: {audio_duration} seconds")
+
+        # Download background music
+        print("Downloading background music...")
+        bg_music_response = requests.get(background_music_url)
+        bg_music_path = os.path.join(output_dir_for_semantic_videos_backgrounds, f"background_music_{uuid.uuid4()}.mp3")
+        with open(bg_music_path, 'wb') as f:
+            f.write(bg_music_response.content)
+        
+        # Load background music and set volume to 20%
+        bg_music_clip = AudioFileClip(bg_music_path).volumex(0.14)
+
+        # Manually loop the background music to match the duration of the main audio
+        bg_music_clips = []
+        total_bg_duration = 0
+        while total_bg_duration < audio_duration:
+            bg_music_clips.append(bg_music_clip)
+            total_bg_duration += bg_music_clip.duration
+
+        combined_bg_music_clip = concatenate_audioclips(bg_music_clips).subclip(0, audio_duration)
+        
+        # Combine the main audio and background music
+        combined_audio = CompositeAudioClip([audio_clip, combined_bg_music_clip])
+        
+        # Download and process semantic structure videos
+        video_clips = []
+        temp_files = [audio_path, bg_music_path]  # To keep track of intermediate files for deletion
+
+        for i, scene in enumerate(semantic_structure):
+            semantic_sentence = scene['semantic_sentence']
+            scene_image_url = scene['scene_image_url']
+            start_time = scene['start_time']
+            end_time = scene['end_time']
+            duration = end_time - start_time
+
+            print(f"Scene {i+1}:")
+            print(f"  Semantic Sentence: {semantic_sentence}")
+            print(f"  Image URL: {scene_image_url}")
+            print(f"  Duration should be {duration} seconds, from {start_time} to {end_time}")
+
+            scene_response = requests.get(scene_image_url)
+            scene_path = os.path.join(output_dir_for_semantic_videos_backgrounds, f"scene_{uuid.uuid4()}.jpg")
+            temp_files.append(scene_path)
+            with open(scene_path, 'wb') as f:
+                f.write(scene_response.content)
+            
+            # Create a video clip from the scene image with zoom effect
+            scene_clip = (VideoFileClip(scene_path)
+                          .set_duration(duration)
+                          .fx(zoom_in_effect, zoom_ratio=0.04)
+                          .crossfadein(1.2))
+
+            # Check for silence and adjust the duration of the current scene to fill the gap
+            if i > 0:
+                previous_end_time = semantic_structure[i-1]['end_time']
+                gap_duration = start_time - previous_end_time
+                if gap_duration > 0:
+                    print(f"  Filling silence gap of {gap_duration} seconds between scenes {i} and {i+1}")
+                    video_clips[-1] = video_clips[-1].set_duration(video_clips[-1].duration + gap_duration)
+            
+            video_clips.append(scene_clip)
+            print(f"  Actual duration: {scene_clip.duration} seconds")
+
+        # Concatenate video clips
+        final_video = concatenate_videoclips(video_clips, method="compose")
+        final_video = final_video.set_audio(combined_audio)
+        
+        print(f"Writing final video to {output_video_path}...")
+        final_video.write_videofile(output_video_path, codec="libx264", audio_codec="aac")
+        
+        # Clean up intermediate files
+        print("Cleaning up temporary files...")
+        for file_path in temp_files:
+            try:
+                os.remove(file_path)
+                print(f"Deleted {file_path}")
+            except Exception as e:
+                print(f"Error deleting {file_path}: {e}")
+        
+        print("Video created successfully")
+    
+    except Exception as e:
+        print(f"Error: {e}")
+        
+        
+def create_captioned_semantic_video(background_video_path, captions, output_video_path):
+    try:
+        # font_path = "/home/ubuntu/Nexa Bold.otf"
+        font_path = "/home/fbk001/Nexa Bold.otf"
+
+        # Load background video
+        background_video = VideoFileClip(background_video_path)  # Load full video
+
+        # Define target size for YouTube Shorts
+        target_size = (1080, 1920)
+        
+        # Resize background video to fit within 1080x1920
+        background_video = background_video.resize(width=target_size[0]).set_position("center")
+
+        def scale_text_clip(txt_clip, start, end, special=False):
+            duration = end - start
+            if special:
+                def resize(t):
+                    third_duration = duration / 3
+                    if t < third_duration:
+                        scale_factor = 1.0 + 0.15 * (t / third_duration)
+                    elif t < 2 * third_duration:
+                        scale_factor = 1.15 - 0.2 * ((t - third_duration) / third_duration)
+                    else:
+                        scale_factor = 0.9 + 0.1 * ((t - 2 * third_duration) / third_duration)
+                    return scale_factor
+            else:
+                def resize(t):
+                    half_duration = duration / 2
+                    if t < half_duration:
+                        scale_factor = 1.0 + 0.1 * (t / half_duration)
+                    else:
+                        scale_factor = 1.1 - 0.1 * ((t - half_duration) / half_duration)
+                    return scale_factor
+
+            return txt_clip.resize(lambda t: resize(t)).set_start(start).set_duration(duration)
+
+        # Create text clips for each caption
+        text_clips = []
+        special_indices = random.sample(range(len(captions)), int(0.3 * len(captions)))  # Randomly select 30% of the indices
+
+        for i, caption in enumerate(captions):
+            txt = caption['word']
+            start = caption['start']
+            end = caption['end']
+            duration = end - start
+            
+            if duration > 0:
+                # Create the primary text clip
+                text_clip = (TextClip(txt, fontsize=70, font=font_path, color='white', stroke_color='white', stroke_width=4, kerning=8)
+                             .set_position(('center', target_size[1] * 3 // 4)))
+                
+                # Create a second text clip with a black stroke
+                text_clip_black = (TextClip(txt, fontsize=74, font=font_path, color='transparent', stroke_color='black', stroke_width=6, kerning=8)
+                                   .set_position(('center', target_size[1] * 3 // 4)))
+
+                glow_offsets = [(0, 0), (1, 1), (-1, -1), (1, -1), (-1, 1)]
+                glow_clips = [TextClip(txt, fontsize=79, font=font_path, color='transparent', stroke_color='rgb(206, 202, 198)', stroke_width=6, kerning=6)
+                              .set_position(('center', target_size[1] * 3 // 4))
+                              for x, y in glow_offsets]
+
+                text_clip_bold = text_clip.set_position(('center', target_size[1] // 3 + 1))
+
+                # Determine if this caption should have the special transformation
+                special = i in special_indices
+
+                # Scale the text clips
+                scaled_text_clip = scale_text_clip(text_clip, start, end, special=special)
+                scaled_text_clip_black = scale_text_clip(text_clip_black, start, end, special=special)
+                scaled_glow_clips = [scale_text_clip(glow_clip, start, end, special=special) for glow_clip in glow_clips]
+
+                # Append the clips in the correct order to create the desired effect
+                text_clips.append(scaled_text_clip_black)
+                # text_clips.extend(scaled_glow_clips)
+                text_clips.append(scaled_text_clip)
+                # text_clips.append(text_clip_bold)
+
+        # Create final video with scrolling captions
+        final_video = CompositeVideoClip([background_video] + text_clips, size=target_size)
+        
+        # Save the final video
+        final_video.write_videofile(output_video_path, codec="libx264", audio_codec="aac")
+        
+        # Delete the original asset video
+        # os.remove(background_video_path)
+    except Exception as e:
+        print(f"Error: {e}")
+
+@app.post("/create-captioned-semantic-videos/")
+async def create_captioned_videos(request: CaptionedVideoRequest):
+    try:
+        print("Received request:")
+        print(f"Background Video URL: {request.background_video_url}")
+        print(f"Captions: {request.captions}")
+
+        # Parse captions
+        captions = json.loads(request.captions)
+        
+        # Paths
+        background_video_path = f"{request.background_video_url}"
+
+        unique_id = str(uuid.uuid4())
+        output_video_path = os.path.join(output_dir_for_final_semantic_videos, f"output_captioned_semantic_video_{unique_id}.mp4")
+
+        
+        # Respond with the output path before processing
+        response = {"expected_output_video_url": output_video_path}
+        print(response)
+        
+        # Submit video processing task to the executor
+        executor.submit(create_captioned_semantic_video, background_video_path, captions, output_video_path)
+        
+        return response
+    except Exception as e:
+        print(f"Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # Mount the static files directory
-app.mount("/BackgroundVideos", StaticFiles(directory=output_dir), name="BackgroundVideos")
+app.mount("/BackgroundVideos", StaticFiles(directory="BackgroundVideos"), name="BackgroundVideos")
 
 app.mount("/Final_Videos", StaticFiles(directory="Final_Videos"), name="Final_Videos")
+
+app.mount("/SemanticVideosBackgrounds", StaticFiles(directory="SemanticVideosBackgrounds"), name="SemanticVideosBackgrounds")
+
+app.mount("/FinalSemanticVideos", StaticFiles(directory="FinalSemanticVideos"), name="FinalSemanticVideos")
 
 
 
