@@ -27,6 +27,8 @@ from googleapiclient.discovery import build
 from PIL import Image
 import numpy as np
 import math
+from typing import List
+
 
 
 # Create output directory if not exists
@@ -64,7 +66,7 @@ executor = ThreadPoolExecutor(max_workers=4)
 
 class VideoCreateRequest(BaseModel):
     audio_url: str
-    assetUrls: list[str]
+    assetUrls: List[str]
     background_music_url: str
 
 model = whisper.load_model("tiny.en")
@@ -609,38 +611,41 @@ def create__semantic_background_video(audio_url: str, semantic_structure: list, 
 
         for i, scene in enumerate(semantic_structure):
             semantic_sentence = scene['semantic_sentence']
-            scene_image_url = scene['scene_image_url']
+            scene_image_urls = scene['scene_image_url'].split(',')
             start_time = scene['start_time']
             end_time = scene['end_time']
             duration = end_time - start_time
 
             print(f"Scene {i+1}:")
             print(f"  Semantic Sentence: {semantic_sentence}")
-            print(f"  Image URL: {scene_image_url}")
+            print(f"  Image URLs: {scene_image_urls}")
             print(f"  Duration should be {duration} seconds, from {start_time} to {end_time}")
 
-            scene_response = requests.get(scene_image_url)
-            scene_path = os.path.join(output_dir_for_semantic_videos_backgrounds, f"scene_{uuid.uuid4()}.jpg")
-            temp_files.append(scene_path)
-            with open(scene_path, 'wb') as f:
-                f.write(scene_response.content)
-            
-            # Create a video clip from the scene image with zoom effect
-            scene_clip = (VideoFileClip(scene_path)
-                          .set_duration(duration)
-                          .fx(zoom_in_effect, zoom_ratio=0.04)
-                          .crossfadein(1.2))
+            individual_duration = duration / len(scene_image_urls)
 
-            # Check for silence and adjust the duration of the current scene to fill the gap
-            if i > 0:
-                previous_end_time = semantic_structure[i-1]['end_time']
-                gap_duration = start_time - previous_end_time
-                if gap_duration > 0:
-                    print(f"  Filling silence gap of {gap_duration} seconds between scenes {i} and {i+1}")
-                    video_clips[-1] = video_clips[-1].set_duration(video_clips[-1].duration + gap_duration)
-            
-            video_clips.append(scene_clip)
-            print(f"  Actual duration: {scene_clip.duration} seconds")
+            for img_url in scene_image_urls:
+                scene_response = requests.get(img_url)
+                scene_path = os.path.join(output_dir_for_semantic_videos_backgrounds, f"scene_{uuid.uuid4()}.jpg")
+                temp_files.append(scene_path)
+                with open(scene_path, 'wb') as f:
+                    f.write(scene_response.content)
+                
+                # Create a video clip from the scene image with zoom effect
+                scene_clip = (ImageClip(scene_path)
+                              .set_duration(individual_duration)
+                              .fx(zoom_in_effect, zoom_ratio=0.04)
+                              .crossfadein(1.2))
+
+                # Check for silence and adjust the duration of the current scene to fill the gap
+                if i > 0 and len(video_clips) > 0:
+                    previous_end_time = semantic_structure[i-1]['end_time']
+                    gap_duration = start_time - previous_end_time
+                    if gap_duration > 0:
+                        print(f"  Filling silence gap of {gap_duration} seconds between scenes {i} and {i+1}")
+                        video_clips[-1] = video_clips[-1].set_duration(video_clips[-1].duration + gap_duration)
+                
+                video_clips.append(scene_clip)
+                print(f"  Actual duration: {scene_clip.duration} seconds")
 
         # Concatenate video clips
         final_video = concatenate_videoclips(video_clips, method="compose")
