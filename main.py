@@ -658,7 +658,7 @@ def create__semantic_background_video(audio_url: str, semantic_structure: list, 
         final_video = final_video.set_audio(combined_audio)
         
         print(f"Writing final video to {output_video_path}...")
-        final_video.write_videofile(output_video_path, codec="libx264", audio_codec="aac")
+        final_video.write_videofile(output_video_path, codec="libx264", audio_codec="aac", fps=24)
         
         # Clean up intermediate files
         print("Cleaning up temporary files...")
