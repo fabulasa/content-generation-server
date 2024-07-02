@@ -62,7 +62,7 @@ app = FastAPI()
 
 
 # Thread pool for background tasks
-executor = ThreadPoolExecutor(max_workers=4)
+executor = ThreadPoolExecutor(max_workers=16)
 
 class VideoCreateRequest(BaseModel):
     audio_url: str
