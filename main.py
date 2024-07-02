@@ -60,10 +60,17 @@ class VideoData(BaseModel):
 
 app = FastAPI()
 
+# Determine the font path based on the environment variable
+env = os.getenv('ENV')
+if env == 'local':
+    font_path = "/home/fbk001/Nexa Bold.otf"
+elif env == 'azure':
+    font_path = "/home/azureuser/Nexa Bold.otf"
+else:
+    raise EnvironmentError("Environment variable 'ENV' is not set or is invalid")
 
 # Thread pool for background tasks
-executor = ThreadPoolExecutor(max_workers=16)
-
+executor = ThreadPoolExecutor(max_workers=4)
 class VideoCreateRequest(BaseModel):
     audio_url: str
     assetUrls: List[str]
@@ -273,8 +280,7 @@ def create_video(audio_url: str, asset_urls: List[str], background_music_url: st
         
 def process_video(background_video_path, captions, output_video_path):
     try:
-        font_path = "/home/ubuntu/Nexa Bold.otf"
-        # font_path = "/home/fbk001/Nexa Bold.otf"
+
 
         # Load background video
         background_video = VideoFileClip(background_video_path)  # Load full video
@@ -671,8 +677,7 @@ def create__semantic_background_video(audio_url: str, semantic_structure: list, 
         
 def create_captioned_semantic_video(background_video_path, captions, output_video_path):
     try:
-        # font_path = "/home/ubuntu/Nexa Bold.otf"
-        font_path = "/home/fbk001/Nexa Bold.otf"
+
 
         # Load background video
         background_video = VideoFileClip(background_video_path)  # Load full video
