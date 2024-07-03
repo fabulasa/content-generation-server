@@ -3,31 +3,28 @@ import whisper
 import aiohttp
 import os
 from pydantic import BaseModel
-import os
 import uuid
 import requests
 import json
 import random
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-from moviepy.editor import VideoFileClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips, TextClip, CompositeVideoClip, ImageClip
+from moviepy.editor import VideoFileClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, TextClip, CompositeVideoClip, ImageClip, concatenate_audioclips
 from concurrent.futures import ThreadPoolExecutor
-import http.client
 import httplib2
 from fastapi import FastAPI, HTTPException, Request
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
-from oauth2client.client import flow_from_clientsecrets
-from oauth2client.file import Storage
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
+from google.auth.transport.requests import Request
 from PIL import Image
 import numpy as np
 import math
 from typing import List
+from fastapi.responses import RedirectResponse
+from google.auth.transport.requests import Request as GoogleRequest
 
 
 
@@ -44,11 +41,14 @@ os.makedirs(output_dir_for_semantic_videos_backgrounds, exist_ok=True)
 output_dir_for_final_semantic_videos = "FinalSemanticVideos"
 os.makedirs(output_dir_for_final_semantic_videos, exist_ok=True)
 
+TOKENS_DIR = "tokens"
+os.makedirs(TOKENS_DIR, exist_ok=True)
+
+
 
 class CaptionedVideoRequest(BaseModel):
     background_video_url: str
     captions: str
-
 
 class VideoData(BaseModel):
     file: str
@@ -71,6 +71,7 @@ else:
 
 # Thread pool for background tasks
 executor = ThreadPoolExecutor(max_workers=4)
+
 class VideoCreateRequest(BaseModel):
     audio_url: str
     assetUrls: List[str]
@@ -140,13 +141,13 @@ async def transcribe_word_level(request: TranscriptionRequest):
 
         # Transcribe the audio file
         result = model.transcribe(audio_path, word_timestamps=True)
+
         # End the timer
         end_time = time.time()
 
         # Calculate the elapsed time
         elapsed_time = end_time - start_time
 
-        # Extract the word-level transcript
         # Extract the word-level transcripts
         word_transcripts = []
         for segment in result['segments']:
@@ -156,6 +157,7 @@ async def transcribe_word_level(request: TranscriptionRequest):
                     "start": word['start'],
                     "end": word['end']
                 })
+
         # Remove the downloaded audio file
         os.remove(audio_path)
 
@@ -166,10 +168,11 @@ async def transcribe_word_level(request: TranscriptionRequest):
     except Exception as e:
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/create-video/")
-async def transcribe_audio(request: VideoCreateRequest):
+async def create_video_endpoint(request: VideoCreateRequest):
     try:
-        print("Received request:", request.json())  # Log the incoming JSON data
+        print("Received request:", request)  # Log the incoming JSON data
         audio_url = request.audio_url
         asset_urls = request.assetUrls
         background_music_url = request.background_music_url
@@ -277,11 +280,9 @@ def create_video(audio_url: str, asset_urls: List[str], background_music_url: st
     
     except Exception as e:
         print(f"Error: {e}")
-        
+
 def process_video(background_video_path, captions, output_video_path):
     try:
-
-
         # Load background video
         background_video = VideoFileClip(background_video_path)  # Load full video
 
@@ -393,58 +394,47 @@ async def create_captioned_videos(request: CaptionedVideoRequest):
     except Exception as e:
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+
+# Constants
 CLIENT_SECRETS_FILE = "client_secrets.json"
 YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 YOUTUBE_API_SERVICE_NAME = "youtube"
 YOUTUBE_API_VERSION = "v3"
-MISSING_CLIENT_SECRETS_MESSAGE = f"""
-WARNING: Please configure OAuth 2.0
-
-To make this sample run you will need to populate the client_secrets.json file
-found at:
-
-   {os.path.abspath(os.path.join(os.path.dirname(__file__), CLIENT_SECRETS_FILE))}
-
-with information from the API Console
-https://console.cloud.google.com/
-
-For more information about the client_secrets.json file format, please visit:
-https://developers.google.com/api-client-library/python/guide/aaa_client_secrets
-"""
-
-RETRIABLE_EXCEPTIONS = (httplib2.HttpLib2Error, IOError,
-                        http.client.NotConnected, http.client.IncompleteRead,
-                        http.client.ImproperConnectionState, http.client.CannotSendRequest,
-                        http.client.CannotSendHeader, http.client.ResponseNotReady,
-                        http.client.BadStatusLine)
-RETRIABLE_STATUS_CODES = [500, 502, 503, 504]
+SCOPES = [YOUTUBE_UPLOAD_SCOPE]
 MAX_RETRIES = 10
-CLIENT_SECRETS_FILE = "client_secrets.json"
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
-TOKEN_FILE = "token.json"
+TOKENS_DIR = "tokens"
 
 
+class VideoData(BaseModel):
+    file: str
+    title: str
+    description: str
+    keywords: str = ""
+    category: str = "22"
+    privacyStatus: str = "public"
+    channelId: str
 
-def get_authenticated_service():
+def get_authenticated_service(channel_id: str):
+    token_file = os.path.join(TOKENS_DIR, f"{channel_id}.json")
     credentials = None
 
     # Load credentials from file if available
-    if os.path.exists(TOKEN_FILE):
-        credentials = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+    if os.path.exists(token_file):
+        credentials = Credentials.from_authorized_user_file(token_file, SCOPES)
 
     # If no valid credentials are available, prompt the user to log in
     if not credentials or not credentials.valid:
         if credentials and credentials.expired and credentials.refresh_token:
-            credentials.refresh(Request())
+            credentials.refresh(GoogleRequest())
         else:
+            # Start the OAuth flow to get new credentials
             flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRETS_FILE, SCOPES)
             credentials = flow.run_local_server(port=0)
 
-        # Save the credentials for the next run
-        with open(TOKEN_FILE, 'w') as token:
-            token.write(credentials.to_json())
-
+            # Save the credentials for the next run
+            with open(token_file, 'w') as token:
+                token.write(credentials.to_json())
+    
     return build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, credentials=credentials)
 
 def initialize_upload(youtube, video_data: VideoData):
@@ -488,11 +478,11 @@ def resumable_upload(insert_request):
                 else:
                     raise HTTPException(status_code=500, detail="The upload failed with an unexpected response.")
         except HttpError as e:
-            if e.resp.status in RETRIABLE_STATUS_CODES:
+            if e.resp.status in [500, 502, 503, 504]:
                 error = f"A retriable HTTP error {e.resp.status} occurred:\n{e.content}"
             else:
                 raise HTTPException(status_code=e.resp.status, detail=e.content)
-        except RETRIABLE_EXCEPTIONS as e:
+        except (httplib2.HttpLib2Error, IOError) as e:
             error = f"A retriable error occurred: {e}"
 
         if error is not None:
@@ -509,7 +499,7 @@ def resumable_upload(insert_request):
 @app.post("/uploadToYouTube")
 async def upload_to_youtube(video_data: VideoData):
     try:
-        youtube = get_authenticated_service()
+        youtube = get_authenticated_service(video_data.channelId)
         response = initialize_upload(youtube, video_data)
         return {"id": response['id']}
     except Exception as e:
@@ -615,6 +605,8 @@ def create__semantic_background_video(audio_url: str, semantic_structure: list, 
         video_clips = []
         temp_files = [audio_path, bg_music_path]  # To keep track of intermediate files for deletion
 
+        target_size = (1080, 1920)  # YouTube Shorts dimensions
+
         for i, scene in enumerate(semantic_structure):
             semantic_sentence = scene['semantic_sentence']
             scene_image_urls = scene['scene_image_url'].split(',')
@@ -639,6 +631,7 @@ def create__semantic_background_video(audio_url: str, semantic_structure: list, 
                 # Create a video clip from the scene image with zoom effect
                 scene_clip = (ImageClip(scene_path)
                               .set_duration(individual_duration)
+                              .resize(width=target_size[0])  # Resize to fit the width of YouTube Shorts
                               .fx(zoom_in_effect, zoom_ratio=0.04)
                               .crossfadein(1.2))
 
@@ -673,12 +666,9 @@ def create__semantic_background_video(audio_url: str, semantic_structure: list, 
     
     except Exception as e:
         print(f"Error: {e}")
-        
-        
+
 def create_captioned_semantic_video(background_video_path, captions, output_video_path):
     try:
-
-
         # Load background video
         background_video = VideoFileClip(background_video_path)  # Load full video
 
@@ -758,12 +748,12 @@ def create_captioned_semantic_video(background_video_path, captions, output_vide
         final_video.write_videofile(output_video_path, codec="libx264", audio_codec="aac")
         
         # Delete the original asset video
-        # os.remove(background_video_path)
+        os.remove(background_video_path)
     except Exception as e:
         print(f"Error: {e}")
 
 @app.post("/create-captioned-semantic-videos/")
-async def create_captioned_videos(request: CaptionedVideoRequest):
+async def create_captioned_semantic_videos(request: CaptionedVideoRequest):
     try:
         print("Received request:")
         print(f"Background Video URL: {request.background_video_url}")
@@ -791,17 +781,11 @@ async def create_captioned_videos(request: CaptionedVideoRequest):
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # Mount the static files directory
 app.mount("/BackgroundVideos", StaticFiles(directory="BackgroundVideos"), name="BackgroundVideos")
-
 app.mount("/Final_Videos", StaticFiles(directory="Final_Videos"), name="Final_Videos")
-
 app.mount("/SemanticVideosBackgrounds", StaticFiles(directory="SemanticVideosBackgrounds"), name="SemanticVideosBackgrounds")
-
 app.mount("/FinalSemanticVideos", StaticFiles(directory="FinalSemanticVideos"), name="FinalSemanticVideos")
-
-
 
 if __name__ == "__main__":
     import uvicorn
