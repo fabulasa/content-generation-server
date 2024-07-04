@@ -9,7 +9,7 @@ import json
 import random
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from moviepy.editor import VideoFileClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, TextClip, CompositeVideoClip, ImageClip, concatenate_audioclips
+from moviepy.editor import VideoFileClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, TextClip, CompositeVideoClip, ImageClip, concatenate_audioclips, ColorClip
 from concurrent.futures import ThreadPoolExecutor
 import httplib2
 from fastapi import FastAPI, HTTPException, Request
@@ -686,7 +686,6 @@ async def create_captioned_semantic_videos(request: CaptionedVideoRequest):
         unique_id = str(uuid.uuid4())
         output_video_path = os.path.join(output_dir_for_final_semantic_videos, f"output_captioned_semantic_video_{unique_id}.mp4")
 
-        
         # Respond with the output path before processing
         response = {"expected_output_video_url": output_video_path}
         print(response)
@@ -710,68 +709,69 @@ def create_captioned_semantic_video(background_video_path, captions, output_vide
         # Resize background video to fit within 1080x1920
         background_video = background_video.resize(width=target_size[0]).set_position("center")
 
-        def scale_text_clip(txt_clip, start, end, special=False):
-            duration = end - start
-            if special:
-                def resize(t):
-                    third_duration = duration / 3
-                    if t < third_duration:
-                        scale_factor = 1.0 + 0.15 * (t / third_duration)
-                    elif t < 2 * third_duration:
-                        scale_factor = 1.15 - 0.2 * ((t - third_duration) / third_duration)
-                    else:
-                        scale_factor = 0.9 + 0.1 * ((t - 2 * third_duration) / third_duration)
-                    return scale_factor
-            else:
-                def resize(t):
-                    half_duration = duration / 2
-                    if t < half_duration:
-                        scale_factor = 1.0 + 0.1 * (t / half_duration)
-                    else:
-                        scale_factor = 1.1 - 0.1 * ((t - half_duration) / half_duration)
-                    return scale_factor
-
-            return txt_clip.resize(lambda t: resize(t)).set_start(start).set_duration(duration)
-
-        # Create text clips for each caption
-        text_clips = []
-        special_indices = random.sample(range(len(captions)), int(0.3 * len(captions)))  # Randomly select 30% of the indices
-
-        for i, caption in enumerate(captions):
-            txt = caption['word']
-            start = caption['start']
-            end = caption['end']
-            duration = end - start
+        def create_text_clips(captions, framesize, font=font_path, fontsize=70, color='white'):
+            word_clips = []
+            y_pos = framesize[1] * 3 // 4
+            frame_width = framesize[0]
+            space_width = TextClip(" ", font=font, fontsize=fontsize, color=color).size[0]
             
-            if duration > 0:
-                # Create the primary text clip
-                text_clip = (TextClip(txt, fontsize=70, font=font_path, color='white', stroke_color='white', stroke_width=4, kerning=8)
-                             .set_position(('center', target_size[1] * 3 // 4)))
-                
-                # Create a second text clip with a black stroke
-                text_clip_black = (TextClip(txt, fontsize=74, font=font_path, color='transparent', stroke_color='black', stroke_width=6, kerning=8)
-                                   .set_position(('center', target_size[1] * 3 // 4)))
+            i = 0
+            while i < len(captions):
+                line_clips = []
+                total_width = 0
+                max_end_time = 0
+                line_completed = False
 
-                glow_offsets = [(0, 0), (1, 1), (-1, -1), (1, -1), (-1, 1)]
-                glow_clips = [TextClip(txt, fontsize=79, font=font_path, color='transparent', stroke_color='rgb(206, 202, 198)', stroke_width=6, kerning=6)
-                              .set_position(('center', target_size[1] * 3 // 4))
-                              for x, y in glow_offsets]
+                # Determine the end of the current line
+                j = 0
+                while i + j < len(captions) and j < 3 and not line_completed:
+                    txt = captions[i + j]['word']
+                    if '.' in txt or '?' in txt or ',' in txt:
+                        line_completed = True
+                    j += 1
 
-                text_clip_bold = text_clip.set_position(('center', target_size[1] // 3 + 1))
+                # Calculate the total width of the line
+                for k in range(j):
+                    txt = captions[i + k]['word']
+                    word_clip = TextClip(txt, font=font, fontsize=fontsize, color=color)
+                    word_width, _ = word_clip.size
+                    total_width += word_width
+                    if k < j - 1:
+                        total_width += space_width
+                    if captions[i + k]['end'] > max_end_time:
+                        max_end_time = captions[i + k]['end']
 
-                # Determine if this caption should have the special transformation
-                special = i in special_indices
+                x_pos = (frame_width - total_width) // 2  # Center the total width
 
-                # Scale the text clips
-                scaled_text_clip = scale_text_clip(text_clip, start, end, special=special)
-                scaled_text_clip_black = scale_text_clip(text_clip_black, start, end, special=special)
-                scaled_glow_clips = [scale_text_clip(glow_clip, start, end, special=special) for glow_clip in glow_clips]
+                for k in range(j):
+                    caption = captions[i + k]
+                    txt = caption['word']
+                    start = caption['start']
+                    end = caption['end']
+                    duration = end - start
 
-                # Append the clips in the correct order to create the desired effect
-                text_clips.append(scaled_text_clip_black)
-                # text_clips.extend(scaled_glow_clips)
-                text_clips.append(scaled_text_clip)
-                # text_clips.append(text_clip_bold)
+                    word_clip = TextClip(txt, font=font, fontsize=fontsize, color=color).set_start(start).set_duration(max_end_time - start)
+                    word_width, word_height = word_clip.size
+                    
+                    # Position the word clip
+                    word_clip = word_clip.set_position((x_pos, y_pos))
+                    x_pos += word_width + space_width
+                    line_clips.append(word_clip)
+
+                # Append the line clips to word_clips
+                word_clips.extend(line_clips)
+
+                # Add a blank clip to clear the line after the last word is done
+                clear_clip = ColorClip(size=(frame_width, word_height + 40), color=(0, 0, 0, 0)).set_start(max_end_time).set_duration(0.01).set_position((0, y_pos))
+                word_clips.append(clear_clip)
+
+                # Move to the next line
+                i += j
+
+            return word_clips
+
+        # Create text clips
+        text_clips = create_text_clips(captions, target_size)
 
         # Create final video with scrolling captions
         final_video = CompositeVideoClip([background_video] + text_clips, size=target_size)
@@ -783,6 +783,14 @@ def create_captioned_semantic_video(background_video_path, captions, output_vide
         os.remove(background_video_path)
     except Exception as e:
         print(f"Error: {e}")
+
+
+
+
+
+
+
+
         
         
 # Mount the static files directory
