@@ -648,7 +648,9 @@ def create__semantic_background_video(audio_url: str, semantic_structure: list, 
 
         # Concatenate video clips
         final_video = concatenate_videoclips(video_clips, method="compose")
-        final_video = final_video.set_audio(combined_audio)
+
+        # Ensure the final video duration matches the audio duration
+        final_video = final_video.set_duration(audio_duration).set_audio(combined_audio)
         
         print(f"Writing final video to {output_video_path}...")
         final_video.write_videofile(output_video_path, codec="libx264", audio_codec="aac", fps=24)
@@ -666,6 +668,36 @@ def create__semantic_background_video(audio_url: str, semantic_structure: list, 
     
     except Exception as e:
         print(f"Error: {e}")
+
+
+@app.post("/create-captioned-semantic-videos/")
+async def create_captioned_semantic_videos(request: CaptionedVideoRequest):
+    try:
+        print("Received request:")
+        print(f"Background Video URL: {request.background_video_url}")
+        print(f"Captions: {request.captions}")
+
+        # Parse captions
+        captions = json.loads(request.captions)
+        
+        # Paths
+        background_video_path = f"{request.background_video_url}"
+
+        unique_id = str(uuid.uuid4())
+        output_video_path = os.path.join(output_dir_for_final_semantic_videos, f"output_captioned_semantic_video_{unique_id}.mp4")
+
+        
+        # Respond with the output path before processing
+        response = {"expected_output_video_url": output_video_path}
+        print(response)
+        
+        # Submit video processing task to the executor
+        executor.submit(create_captioned_semantic_video, background_video_path, captions, output_video_path)
+        
+        return response
+    except Exception as e:
+        print(f"Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 def create_captioned_semantic_video(background_video_path, captions, output_video_path):
     try:
@@ -751,36 +783,8 @@ def create_captioned_semantic_video(background_video_path, captions, output_vide
         os.remove(background_video_path)
     except Exception as e:
         print(f"Error: {e}")
-
-@app.post("/create-captioned-semantic-videos/")
-async def create_captioned_semantic_videos(request: CaptionedVideoRequest):
-    try:
-        print("Received request:")
-        print(f"Background Video URL: {request.background_video_url}")
-        print(f"Captions: {request.captions}")
-
-        # Parse captions
-        captions = json.loads(request.captions)
         
-        # Paths
-        background_video_path = f"{request.background_video_url}"
-
-        unique_id = str(uuid.uuid4())
-        output_video_path = os.path.join(output_dir_for_final_semantic_videos, f"output_captioned_semantic_video_{unique_id}.mp4")
-
         
-        # Respond with the output path before processing
-        response = {"expected_output_video_url": output_video_path}
-        print(response)
-        
-        # Submit video processing task to the executor
-        executor.submit(create_captioned_semantic_video, background_video_path, captions, output_video_path)
-        
-        return response
-    except Exception as e:
-        print(f"Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 # Mount the static files directory
 app.mount("/BackgroundVideos", StaticFiles(directory="BackgroundVideos"), name="BackgroundVideos")
 app.mount("/Final_Videos", StaticFiles(directory="Final_Videos"), name="Final_Videos")
