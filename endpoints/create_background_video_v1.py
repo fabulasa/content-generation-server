@@ -23,7 +23,7 @@ class VideoCreateRequest(BaseModel):
 @router.post("/create-background-video/v1")
 async def create_video_background_video_v1_endpoint(request: VideoCreateRequest):
     try:
-        audio_url = strip_url_params(request.audio_url)
+        audio_url = request.audio_url
         asset_urls = [strip_url_params(url) for url in request.assetUrls]
         background_music_url = strip_url_params(request.background_music_url)
 
