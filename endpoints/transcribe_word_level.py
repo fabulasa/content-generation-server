@@ -4,6 +4,8 @@ import whisper
 import aiohttp
 import os
 import time
+import uuid
+
 
 router = APIRouter()
 
@@ -15,7 +17,7 @@ class TranscriptionRequest(BaseModel):
 @router.post("/transcribe/word-level/")
 async def transcribe_word_level(request: TranscriptionRequest):
     try:
-        audio_path = "audio.mp3"
+        audio_path = f"{uuid.uuid4()}.mp3"
         async with aiohttp.ClientSession() as session:
             async with session.get(request.voice_over_url) as response:
                 if response.status != 200:
